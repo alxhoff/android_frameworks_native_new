@@ -54,6 +54,9 @@
 #include "egl_tls.h"
 #include "egldefs.h"
 
+#include "EGL/EGLsyslog.h"
+// #include <pthread.h>
+
 using namespace android;
 
 // This extension has not been ratified yet, so can't be shipped.
@@ -1155,9 +1158,72 @@ EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay dpy, EGLSurface draw,
     }
 }
 
+#ifdef EGL_IOCTL_LOGGING
+static void *eglLogFrame(void *log_frame)
+{
+    static int IOctl_fd;
+    struct EGLLogFrame *lf = (struct EGLLogFrame *)log_frame;
+
+    //TODO can fd be just opened once?
+    IOctl_fd = open(EGL_SYSLOGGER_DEV, O_RDWR);
+
+    if(IOctl_fd > 0)
+        ioctl(IOctl_fd, IOCTL_EGL_LOG_FRAME, lf);
+
+    close(IOctl_fd);
+    free(lf);
+    pthread_exit(NULL);
+
+    return NULL;
+}
+#endif //EGL_IOCTL_LOGGING
+
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
 {
-    return eglSwapBuffersWithDamageKHR(dpy, surface, NULL, 0);
+    static uint64_t target_frame_period = 1e9/OPENGL_TARGET_FPS;
+    static uint64_t prev_frame_dur = 0, req_sleep_dur = 0;
+    static EGLBoolean first_run = EGL_FALSE;
+    static timespec last_frame_time = {0}, cur_frame_time = {0};
+    static pthread_t IOctl_thread;
+
+    EGLBoolean ret = eglSwapBuffersWithDamageKHR(dpy, surface, NULL, 0);
+    
+    //Limiting FPS
+    //      Get current frame's timestamp
+    clock_gettime(CLOCK_MONOTONIC, &cur_frame_time);
+    //      Get duration of prev frame
+    
+    if(first_run){
+        prev_frame_dur = 
+            ((uint64_t)cur_frame_time.tv_sec * (uint64_t)1.0e9 + (uint64_t) cur_frame_time.tv_nsec) 
+            - ((uint64_t)last_frame_time.tv_sec * (uint64_t)1.0e9 + (uint64_t) last_frame_time.tv_nsec);
+
+#ifdef EGL_IOCTL_LOGGING 
+        struct EGLLogFrame *lf = 
+            (struct EGLLogFrame *)malloc(sizeof(struct EGLLogFrame));
+        lf->frame_ts = (uint64_t)cur_frame_time.tv_sec * (uint64_t)1.0e9 + 
+            (uint64_t)cur_frame_time.tv_nsec;
+        lf->inter_frame_period = prev_frame_dur;
+
+        if(!pthread_create(&IOctl_thread, NULL, eglLogFrame, lf))
+            pthread_detach(IOctl_thread);
+
+#endif //EGL_IOCTL_LOGGING
+
+#ifdef LIMIT_FRAME_PERIOD
+        if(prev_frame_dur < target_frame_period){
+            //Need to delay frame to limit to target
+            req_sleep_dur = (target_frame_period - prev_frame_dur) / 1e3; // uSecs
+            usleep(req_sleep_dur);
+        } else 
+            req_sleep_dur = 0;
+#endif //LIMIT_FRAME_PERIOD
+    }
+
+    last_frame_time = cur_frame_time;
+
+    first_run = EGL_TRUE;
+    return ret;
 }
 
 EGLBoolean eglCopyBuffers(  EGLDisplay dpy, EGLSurface surface,
