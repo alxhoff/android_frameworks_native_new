@@ -65,6 +65,9 @@ using namespace android;
 
 #define ENABLE_EGL_ANDROID_GET_FRAME_TIMESTAMPS 0
 
+#define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "EGL-INFO", __VA_ARGS__))
+#define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, "EGL-ERROR", __VA_ARGS__))
+
 // ----------------------------------------------------------------------------
 
 namespace android {
@@ -1161,14 +1164,20 @@ EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay dpy, EGLSurface draw,
 #ifdef EGL_IOCTL_LOGGING
 static void *eglLogFrame(void *log_frame)
 {
+    LOGI("In eglLogFrame");
     static int IOctl_fd;
     struct EGLLogFrame *lf = (struct EGLLogFrame *)log_frame;
 
     //TODO can fd be just opened once?
-    IOctl_fd = open(EGL_SYSLOGGER_DEV, O_RDWR);
+    if((IOctl_fd = open(EGL_SYSLOGGER_DEV, O_RDWR)) > 0)
+        LOGI("EGL IOctl FD opened %s:%d", EGL_SYSLOGGER_DEV, IOctl_fd);
+    else
+        LOGI("EGL IOctl FD not opened %s:%d", EGL_SYSLOGGER_DEV, IOctl_fd);
 
-    if(IOctl_fd > 0)
+    if(IOctl_fd > 0){
         ioctl(IOctl_fd, IOCTL_EGL_LOG_FRAME, lf);
+        LOGI("Log frame send via IOctl");
+    } 
 
     close(IOctl_fd);
     free(lf);
@@ -1187,16 +1196,16 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
     static pthread_t IOctl_thread;
 
     EGLBoolean ret = eglSwapBuffersWithDamageKHR(dpy, surface, NULL, 0);
+    LOGI("Swap buffer done");
     
-    //Limiting FPS
-    //      Get current frame's timestamp
-    clock_gettime(CLOCK_MONOTONIC, &cur_frame_time);
-    //      Get duration of prev frame
+    // clock_gettime(CLOCK_BOOTTIME, &cur_frame_time);
+    clock_gettime(CLOCK_MONOTONIC_RAW, &cur_frame_time);
     
     if(first_run){
         prev_frame_dur = 
             ((uint64_t)cur_frame_time.tv_sec * (uint64_t)1.0e9 + (uint64_t) cur_frame_time.tv_nsec) 
             - ((uint64_t)last_frame_time.tv_sec * (uint64_t)1.0e9 + (uint64_t) last_frame_time.tv_nsec);
+        LOGI("Frame duration: %llu", prev_frame_dur);
 
 #ifdef EGL_IOCTL_LOGGING 
         struct EGLLogFrame *lf = 
@@ -1204,6 +1213,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
         lf->frame_ts = (uint64_t)cur_frame_time.tv_sec * (uint64_t)1.0e9 + 
             (uint64_t)cur_frame_time.tv_nsec;
         lf->inter_frame_period = prev_frame_dur;
+        LOGI("Log frame created");
 
         if(!pthread_create(&IOctl_thread, NULL, eglLogFrame, lf))
             pthread_detach(IOctl_thread);
@@ -1214,6 +1224,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
         if(prev_frame_dur < target_frame_period){
             //Need to delay frame to limit to target
             req_sleep_dur = (target_frame_period - prev_frame_dur) / 1e3; // uSecs
+            LOGI("Frame needs sleeping for %llu uS", req_sleep_dur);
             usleep(req_sleep_dur);
         } else 
             req_sleep_dur = 0;
@@ -1223,6 +1234,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
     last_frame_time = cur_frame_time;
 
     first_run = EGL_TRUE;
+    LOGI("Finished egSwapBuffers");
     return ret;
 }
 
