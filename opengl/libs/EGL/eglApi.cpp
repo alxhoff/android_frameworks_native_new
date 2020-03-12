@@ -55,7 +55,6 @@
 #include "egldefs.h"
 
 #include "EGL/EGLsyslog.h"
-// #include <pthread.h>
 
 using namespace android;
 
@@ -1192,48 +1191,53 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
     static uint64_t target_frame_period = 1e9/OPENGL_TARGET_FPS;
     static uint64_t prev_frame_dur = 0, req_sleep_dur = 0;
     static EGLBoolean first_run = EGL_FALSE;
-    static timespec last_frame_time = {0}, cur_frame_time = {0};
     static pthread_t IOctl_thread;
+    static uint64_t cur_frame_time_ns = 0, last_frame_time_ns = 0;
 
     EGLBoolean ret = eglSwapBuffersWithDamageKHR(dpy, surface, NULL, 0);
     LOGI("Swap buffer done");
-    
-    // clock_gettime(CLOCK_BOOTTIME, &cur_frame_time);
-    clock_gettime(CLOCK_MONOTONIC_RAW, &cur_frame_time);
-    
-    if(first_run){
-        prev_frame_dur = 
-            ((uint64_t)cur_frame_time.tv_sec * (uint64_t)1.0e9 + (uint64_t) cur_frame_time.tv_nsec) 
-            - ((uint64_t)last_frame_time.tv_sec * (uint64_t)1.0e9 + (uint64_t) last_frame_time.tv_nsec);
-        LOGI("Frame duration: %llu", prev_frame_dur);
 
 #ifdef EGL_IOCTL_LOGGING 
+
+    if(first_run != EGL_FALSE){
         struct EGLLogFrame *lf = 
             (struct EGLLogFrame *)malloc(sizeof(struct EGLLogFrame));
-        lf->frame_ts = (uint64_t)cur_frame_time.tv_sec * (uint64_t)1.0e9 + 
-            (uint64_t)cur_frame_time.tv_nsec;
-        lf->inter_frame_period = prev_frame_dur;
-        LOGI("Log frame created");
+        LOGI("log fram allocd");
 
+        clock_gettime(CLOCK_MONOTONIC_RAW, &lf->frame_ts);
+        LOGI("Time gotten");
+        cur_frame_time_ns = ((uint64_t)lf->frame_ts.tv_sec * (uint64_t)1.0e9 
+                + (uint64_t) lf->frame_ts.tv_nsec + 500) / 1000; //uS
+
+        prev_frame_dur = cur_frame_time_ns - last_frame_time_ns;
+        lf->inter_frame_period = prev_frame_dur;
+        
         if(!pthread_create(&IOctl_thread, NULL, eglLogFrame, lf))
             pthread_detach(IOctl_thread);
 
-#endif //EGL_IOCTL_LOGGING
-
 #ifdef LIMIT_FRAME_PERIOD
+    
         if(prev_frame_dur < target_frame_period){
             //Need to delay frame to limit to target
-            req_sleep_dur = (target_frame_period - prev_frame_dur) / 1e3; // uSecs
+            req_sleep_dur = (target_frame_period - prev_frame_dur) / 1000; // uSecs
             LOGI("Frame needs sleeping for %llu uS", req_sleep_dur);
             usleep(req_sleep_dur);
-        } else 
-            req_sleep_dur = 0;
+        } 
 #endif //LIMIT_FRAME_PERIOD
+
     }
+    else{ 
+        struct timespec cur_frame_time;
+        clock_gettime(CLOCK_MONOTONIC_RAW, &cur_frame_time);
+        cur_frame_time_ns = ((uint64_t)cur_frame_time.tv_sec * (uint64_t)1.0e9 + (uint64_t) cur_frame_time.tv_nsec + 500) / 1000; //uS
+        first_run = EGL_TRUE;
+    }
+    
+    last_frame_time_ns = cur_frame_time_ns;
 
-    last_frame_time = cur_frame_time;
+#endif //EGL_IOCTL_LOGGING
 
-    first_run = EGL_TRUE;
+
     LOGI("Finished egSwapBuffers");
     return ret;
 }
